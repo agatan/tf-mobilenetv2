@@ -7,32 +7,41 @@ import mobilenetv2
 def _model_fn(features, labels, mode, params):
     features = features['image']
     model = mobilenetv2.MobileNetV2(classes=10, data_format=params['data_format'])
-    if mode == tf.estimator.ModeKeys.TRAIN:
-        optimizer = tf.train.AdamOptimizer()
-        y_pred = model(features, training=True)
-        loss = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_pred=y_pred, y_true=labels))
-        with tf.control_dependencies(model.get_updates_for(features)):
-            train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
-        return tf.estimator.EstimatorSpec(mode=mode, train_op=train_op, loss=loss)
-    y_pred = model(features, training=False)
+
+    y_pred = model(features, training=mode == tf.estimator.ModeKeys.TRAIN)
     predictions = tf.argmax(y_pred, axis=1)
-    if mode == tf.estimator.ModeKeys.EVAL:
-        loss = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_pred=y_pred, y_true=labels))
+
+    if mode == tf.estimator.ModeKeys.PREDICT:
+        result = {
+            'classes': predictions,
+            'probabilities': y_pred,
+        }
         return tf.estimator.EstimatorSpec(
             mode=mode,
-            loss=loss,
-            eval_metric_ops={'accuracy': tf.metrics.accuracy(labels=tf.argmax(labels, axis=1), predictions=predictions)},
+            predictions=predictions,
+            export_outputs={
+                'classify': tf.estimator.export.PredictOutput(result),
+            }
         )
-    result = {
-        'classes': predictions,
-        'probabilities': y_pred,
-    }
+
+    loss = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y_pred=y_pred, y_true=labels))
+    metrics = {'accuracy': tf.metrics.accuracy(labels=tf.argmax(labels, axis=1), predictions=predictions)}
+
+    if mode == tf.estimator.ModeKeys.TRAIN:
+        boundaries = [100000, 200000]
+        values = [0.01, 0.01, 0.001]
+        global_step = tf.train.get_or_create_global_step()
+        learning_rate = tf.train.piecewise_constant(global_step, boundaries, values)
+        optimizer = tf.train.AdamOptimizer(learning_rate)
+        with tf.control_dependencies(model.get_updates_for(features)):
+            train_op = optimizer.minimize(loss, global_step=global_step)
+        return tf.estimator.EstimatorSpec(mode=mode, train_op=train_op, loss=loss, eval_metric_ops=metrics)
+
+    assert mode == tf.estimator.ModeKeys.EVAL
     return tf.estimator.EstimatorSpec(
         mode=mode,
-        predictions=predictions,
-        export_outputs={
-            'classify': tf.estimator.export.PredictOutput(result),
-        }
+        loss=loss,
+        eval_metric_ops=metrics,
     )
 
 
@@ -60,7 +69,7 @@ def main():
         model_dir='/tmp/mobilenetv2',
         params={'data_format': data_format},
         config=tf.estimator.RunConfig(
-            save_checkpoints_secs=60,
+            save_checkpoints_secs=120,
         ),
     )
 
@@ -72,6 +81,7 @@ def main():
         ),
         eval_spec=tf.estimator.EvalSpec(
             eval_input_fn,
+            throttle_secs=120,
         )
     )
 
