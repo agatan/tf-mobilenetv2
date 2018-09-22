@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+import imgaug.augmenters as iaa
 
 import mobilenetv2
 
@@ -51,36 +52,58 @@ def main():
     data_format = 'channels_first' if tf.test.is_gpu_available() else 'channels_last'
 
     (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
-    if data_format == 'channels_first':
-        x_train = np.transpose(x_train, [0, 3, 1, 2])
-        x_test = np.transpose(x_test, [0, 3, 1, 2])
 
     y_train = tf.keras.utils.to_categorical(y_train)
     y_test = tf.keras.utils.to_categorical(y_test)
 
-    def train_input_fn():
-        return tf.data.Dataset.from_tensor_slices((x_train, y_train)).map(lambda x, y: ({'image': tf.image.per_image_standardization(x)}, y)).repeat().shuffle(buffer_size=1000).batch(32).prefetch(8)
-
-    def eval_input_fn():
-        return tf.data.Dataset.from_tensor_slices((x_test, y_test)).map(lambda x, y: ({'image': tf.image.per_image_standardization(x)}, y)).shuffle(buffer_size=1000).batch(4).prefetch(8)
+    def make_input_fn(x, y, batch_size):
+        def g(x, y):
+            aug = iaa.Sequential([
+                iaa.CropAndPad(px=(-4, 4)),
+                iaa.Fliplr(0.5),
+            ])
+            while True:
+                indices = np.random.permutation(len(x))
+                x = x[indices]
+                y = y[indices]
+                n_batches = (len(x) - 1) // batch_size + 1
+                for n in range(n_batches):
+                    s = n * batch_size
+                    e = min((n + 1) * batch_size, len(x))
+                    xs = x[s:e]
+                    ys = y[s:e]
+                    xs = aug.augment_images(xs).astype(np.float32)
+                    xs -= np.mean(xs, axis=(1, 2, 3), keepdims=True)
+                    xs /= (np.std(xs, axis=(1, 2, 3), keepdims=True))
+                    if data_format == 'channels_first':
+                        xs = np.transpose(xs, [0, 3, 1, 2])
+                    yield {'image': xs}, ys
+        def input_fn():
+            if data_format == 'channels_first':
+                output_shapes = ({'image': tf.TensorShape((None, 3, 32, 32))}, tf.TensorShape((None, None)))
+            else:
+                output_shapes = ({'image': tf.TensorShape((None, 32, 32, 3))}, tf.TensorShape((None, None)))
+            return tf.data.Dataset.from_generator(lambda: g(x, y), output_types=({'image': tf.float32}, tf.float32), output_shapes=output_shapes).prefetch(32)
+        return input_fn
 
     estimator = tf.estimator.Estimator(
         model_fn=_model_fn,
         model_dir='/tmp/mobilenetv2',
         params={'data_format': data_format},
         config=tf.estimator.RunConfig(
-            save_checkpoints_secs=120,
+            save_checkpoints_secs=600,
         ),
     )
 
     tf.estimator.train_and_evaluate(
         estimator,
         train_spec=tf.estimator.TrainSpec(
-            train_input_fn,
+            make_input_fn(x_train, y_train, batch_size=32),
             max_steps=1000000,
         ),
         eval_spec=tf.estimator.EvalSpec(
-            eval_input_fn,
+            make_input_fn(x_test, y_test, batch_size=8),
+            steps=64,
             throttle_secs=120,
         )
     )
