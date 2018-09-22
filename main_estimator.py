@@ -7,7 +7,6 @@ import mobilenetv2
 def _model_fn(features, labels, mode, params):
     features = features['image']
     model = mobilenetv2.MobileNetV2(classes=10, data_format=params['data_format'])
-    print(mode)
     if mode == tf.estimator.ModeKeys.TRAIN:
         optimizer = tf.train.AdamOptimizer()
         y_pred = model(features, training=True)
@@ -38,6 +37,8 @@ def _model_fn(features, labels, mode, params):
 
 
 def main():
+    tf.logging.set_verbosity(tf.logging.INFO)
+
     data_format = 'channels_first' if tf.test.is_gpu_available() else 'channels_last'
 
     (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
@@ -45,27 +46,38 @@ def main():
         x_train = np.transpose(x_train, [0, 3, 1, 2])
         x_test = np.transpose(x_test, [0, 3, 1, 2])
 
-    x_train = x_train.astype(np.float32)
     y_train = tf.keras.utils.to_categorical(y_train)
-    x_test = x_test.astype(np.float32)
     y_test = tf.keras.utils.to_categorical(y_test)
 
     def train_input_fn():
-        return tf.data.Dataset.from_tensor_slices(({'image': x_train}, y_train)).batch(32)
+        return tf.data.Dataset.from_tensor_slices((x_train, y_train)).map(lambda x, y: ({'image': tf.image.per_image_standardization(x)}, y)).repeat().shuffle(buffer_size=1000).batch(32).prefetch(8)
 
     def eval_input_fn():
-        return tf.data.Dataset.from_tensor_slices(({'image': x_test}, y_test)).batch(4)
+        return tf.data.Dataset.from_tensor_slices((x_test, y_test)).map(lambda x, y: ({'image': tf.image.per_image_standardization(x)}, y)).shuffle(buffer_size=1000).batch(4).prefetch(8)
 
     estimator = tf.estimator.Estimator(
         model_fn=_model_fn,
         model_dir='/tmp/mobilenetv2',
-        config=tf.estimator.RunConfig(session_config=tf.ConfigProto(log_device_placement=True)),
         params={'data_format': data_format},
+        config=tf.estimator.RunConfig(
+            save_checkpoints_secs=60,
+        ),
     )
-    estimator.train(train_input_fn)
-    estimator.evaluate(eval_input_fn)
 
-    input_shape = (None, 28, 28, 1)
+    tf.estimator.train_and_evaluate(
+        estimator,
+        train_spec=tf.estimator.TrainSpec(
+            train_input_fn,
+            max_steps=1000000,
+        ),
+        eval_spec=tf.estimator.EvalSpec(
+            eval_input_fn,
+        )
+    )
+
+    input_shape = (None, 32, 32, 3)
+    if data_format == 'channels_first':
+        input_shape = (None, 3, 32, 32)
     inputs = tf.placeholder(tf.float32, shape=input_shape)
     input_fn = tf.estimator.export.build_raw_serving_input_receiver_fn({
         'image': inputs,
