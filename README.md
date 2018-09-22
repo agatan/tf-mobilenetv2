@@ -4,5 +4,5 @@ This is a TensorFlow implementation of [MobileNetV2: Inverted Residuals and Line
 
 ### Training
 
-`main.py` is an example training script using estimator API.
-`main_eager.py` is using eager execution mode.
+`main.py` is an example training script using eager execution.
+`main_estimator.py` is using estimator API.
