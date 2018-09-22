@@ -6,7 +6,8 @@ import mobilenetv2
 
 def _model_fn(features, labels, mode, params):
     features = features['image']
-    model = mobilenetv2.MobileNetV2(classes=10)
+    model = mobilenetv2.MobileNetV2(classes=10, data_format=params['data_format'])
+    print(mode)
     if mode == tf.estimator.ModeKeys.TRAIN:
         optimizer = tf.train.AdamOptimizer()
         y_pred = model(features, training=True)
@@ -37,10 +38,16 @@ def _model_fn(features, labels, mode, params):
 
 
 def main():
-    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
-    x_train = np.expand_dims(x_train, axis=-1).astype(np.float32)
+    data_format = 'channels_first' if tf.test.is_gpu_available() else 'channels_last'
+
+    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
+    if data_format == 'channels_first':
+        x_train = np.transpose(x_train, [0, 3, 1, 2])
+        x_test = np.transpose(x_test, [0, 3, 1, 2])
+
+    x_train = x_train.astype(np.float32)
     y_train = tf.keras.utils.to_categorical(y_train)
-    x_test = np.expand_dims(x_test, axis=-1).astype(np.float32)
+    x_test = x_test.astype(np.float32)
     y_test = tf.keras.utils.to_categorical(y_test)
 
     def train_input_fn():
@@ -49,7 +56,12 @@ def main():
     def eval_input_fn():
         return tf.data.Dataset.from_tensor_slices(({'image': x_test}, y_test)).batch(4)
 
-    estimator = tf.estimator.Estimator(model_fn=_model_fn, model_dir='/tmp/mobilenetv2')
+    estimator = tf.estimator.Estimator(
+        model_fn=_model_fn,
+        model_dir='/tmp/mobilenetv2',
+        config=tf.estimator.RunConfig(session_config=tf.ConfigProto(log_device_placement=True)),
+        params={'data_format': data_format},
+    )
     estimator.train(train_input_fn)
     estimator.evaluate(eval_input_fn)
 
